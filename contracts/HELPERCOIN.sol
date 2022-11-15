@@ -2,7 +2,6 @@
 pragma solidity ^0.8.9;
 
 import "./ERC20.sol";
-import "./Ownable.sol";
 
 error WaitPeriodNotElapsed();
 error TransferLimitReached();
@@ -17,12 +16,14 @@ error AddressZeroNotAllowed();
 error RequiredTimeNotElapsed();
 error AmountNotAuthorised();
 error InvalidSlot();
+error ProposalNotSucceeded();
+error AlreadyVoted();
 
 contract HELPERCOIN is ERC20 {
     uint256 public constant maxTotalSupply = 1000 * 10**6 * 10**18;
     uint256 private constant initialTotalSupply = 1 * 10**6 * 10**18;
     uint256 private constant minTotalSupplyForStopBurn = 50 * 10**6 * 10**18;
-    uint256 public constant minBalanceForReward = 100 * 10**18;
+    uint256 public constant minBalanceForReward = 1 * 10**18;
     uint256 public constant denominator = 10000;
 
     uint256 public dailyRewardRate;
@@ -34,7 +35,7 @@ contract HELPERCOIN is ERC20 {
     address public immutable legal_and_backup_address;
     address public immutable marketing_address;
     address public immutable core_holders_address;
-    address public immutable caller;
+    address public caller;
 
     bool public shouldTakeSellFee = true;
     bool public shouldBurn = false;
@@ -57,6 +58,8 @@ contract HELPERCOIN is ERC20 {
     WithdrawInfo public developmentWithdrawInfo;
     WithdrawInfo public legalAndBackupWithdrawInfo;
     WithdrawInfo public marketingWithdrawInfo;
+
+    MultiSign public multiSignInfo;
 
     struct SlotDaysInfo {
         uint256 slot1Days;
@@ -140,6 +143,22 @@ contract HELPERCOIN is ERC20 {
         uint256 lastWithdrawTime;
     }
 
+    struct MultiSign {
+        address callerToBeSet;
+        address developmentWithdrawerToBeSet;
+        address marketingWithdrawerToBeSet;
+        address legalAndBackupWithdrawerToBeSet;
+        address[] voters;
+        mapping(address => bool) isVoter;
+        mapping(address => bool) isVoted;
+        uint256 voteCount;
+        uint256 voteFavour;
+        uint256 voteAgainst;
+        uint256 voteNeeded;
+        uint256 proposalCreationTime;
+        bool isSucceeded;
+    }
+
     event IsDexSet(address _address, bool _value);
 
     constructor(
@@ -151,7 +170,8 @@ contract HELPERCOIN is ERC20 {
         address _development_withdrawer_address,
         address _legal_and_backup_withdrawer_address,
         address _marketing_withdrawer_address,
-        address _caller
+        address _caller,
+        address[] memory _voters
     ) ERC20("HELPER COIN", "HLPR") {
         if (
             _development_address == address(0) ||
@@ -214,21 +234,17 @@ contract HELPERCOIN is ERC20 {
 
         slotDaysRewardInfo = SlotDaysRewardInfo(500, 1000, 1500, 2000, 2250, 2750);
 
-        developmentWithdrawInfo = WithdrawInfo(_development_withdrawer_address, 200, 30 days);
+        developmentWithdrawInfo = WithdrawInfo(_development_withdrawer_address, 200, 0);
         // developmentWithdrawInfo = WithdrawInfo(_development_withdrawer_address, 200, 3600);
         _isExemptFromFee[_development_withdrawer_address] = true;
         _isExemptFromReward[_development_withdrawer_address] = true;
 
-        legalAndBackupWithdrawInfo = WithdrawInfo(
-            _legal_and_backup_withdrawer_address,
-            200,
-            30 days
-        );
+        legalAndBackupWithdrawInfo = WithdrawInfo(_legal_and_backup_withdrawer_address, 200, 0);
         // legalAndBackupWithdrawInfo = WithdrawInfo(_legal_and_backup_withdrawer_address, 200, 3600);
         _isExemptFromFee[_legal_and_backup_withdrawer_address] = true;
         _isExemptFromReward[_legal_and_backup_withdrawer_address] = true;
 
-        marketingWithdrawInfo = WithdrawInfo(_marketing_withdrawer_address, 200, 30 days);
+        marketingWithdrawInfo = WithdrawInfo(_marketing_withdrawer_address, 200, 0);
         // marketingWithdrawInfo = WithdrawInfo(_marketing_withdrawer_address, 200, 3600);
         _isExemptFromFee[_marketing_withdrawer_address] = true;
         _isExemptFromReward[_marketing_withdrawer_address] = true;
@@ -240,6 +256,16 @@ contract HELPERCOIN is ERC20 {
         caller = _caller;
         _isExemptFromFee[_caller] = true;
         _isExemptFromReward[_caller] = true;
+
+        for (uint256 i = 0; i < _voters.length; i++) {
+            if (_voters[i] == address(0)) {
+                revert AddressZeroNotAllowed();
+            }
+            multiSignInfo.voters.push(_voters[i]);
+            multiSignInfo.isVoter[_voters[i]] = true;
+        }
+
+        multiSignInfo.voteNeeded = (_voters.length * 3) / 5;
     }
 
     modifier onlyCaller() {
@@ -251,12 +277,15 @@ contract HELPERCOIN is ERC20 {
 
     modifier onlyWithdrawer(
         WithdrawInfo storage _withdrawInfo,
+        address _to,
         uint256 _withdrawAmount,
         address _fundAddress
     ) {
         uint256 curFundBalance = _balances[_fundAddress];
 
-        if (msg.sender != _withdrawInfo.WithdrawerAddress) {
+        if (
+            msg.sender != _withdrawInfo.WithdrawerAddress || _to == _withdrawInfo.WithdrawerAddress
+        ) {
             revert NotAuthorised();
         }
 
@@ -268,6 +297,13 @@ contract HELPERCOIN is ERC20 {
         }
 
         _withdrawInfo.lastWithdrawTime = block.timestamp;
+        _;
+    }
+
+    modifier onlyMultiSign() {
+        if (!multiSignInfo.isVoter[msg.sender]) {
+            revert NotAuthorised();
+        }
         _;
     }
 
@@ -954,7 +990,7 @@ contract HELPERCOIN is ERC20 {
      */
     function withdrawDevelopmentBalance(address _to, uint256 _amount)
         external
-        onlyWithdrawer(developmentWithdrawInfo, _amount, development_address)
+        onlyWithdrawer(developmentWithdrawInfo, _to, _amount, development_address)
     {
         _withdrawBalance(development_address, _to, _amount);
     }
@@ -964,7 +1000,7 @@ contract HELPERCOIN is ERC20 {
      */
     function withdrawMarketingBalance(address _to, uint256 _amount)
         external
-        onlyWithdrawer(marketingWithdrawInfo, _amount, marketing_address)
+        onlyWithdrawer(marketingWithdrawInfo, _to, _amount, marketing_address)
     {
         _withdrawBalance(marketing_address, _to, _amount);
     }
@@ -974,9 +1010,22 @@ contract HELPERCOIN is ERC20 {
      */
     function withdrawLegalAndBackupBalance(address _to, uint256 _amount)
         external
-        onlyWithdrawer(legalAndBackupWithdrawInfo, _amount, legal_and_backup_address)
+        onlyWithdrawer(legalAndBackupWithdrawInfo, _to, _amount, legal_and_backup_address)
     {
         _withdrawBalance(legal_and_backup_address, _to, _amount);
+    }
+
+    /**
+     * @dev helper withdraw function for the above three functions.
+     */
+    function _withdrawBalance(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) private {
+        _transfer(_from, _to, _amount);
+        _isExemptFromFee[_to] = true;
+        _isExemptFromReward[_to] = true;
     }
 
     /**
@@ -1012,19 +1061,6 @@ contract HELPERCOIN is ERC20 {
     }
 
     /**
-     * @dev helper withdraw function for the above four functions.
-     */
-    function _withdrawBalance(
-        address _from,
-        address _to,
-        uint256 _amount
-    ) private {
-        _transfer(_from, _to, _amount);
-        _isExemptFromFee[_to] = true;
-        _isExemptFromReward[_to] = true;
-    }
-
-    /**
      * @dev this function is used for initial private sale, caller can send some amount of tokens from core holders fund to the address of initial core investors after than that address will be blocked to receive any other tokens
      */
     function preSale(address _to, uint256 _amount) external onlyCaller {
@@ -1051,5 +1087,62 @@ contract HELPERCOIN is ERC20 {
         holdersMapCore[_to].amount25percent = (_amount * 25) / 100;
         holdersMapCore[_to].amount75percent = (_amount * 75) / 100;
         holdersMapCore[_to].amountTotal = _amount;
+    }
+
+    /**
+     * @dev This function is used to create a proposal to change 4 authorities addresses in case of compromisation of any of the 4 addresses. only voters in the multiSignInfo variable can call this function.
+     */
+    function setAuthProposalByMultiSign(
+        address _caller,
+        address _developmentWithdrawer,
+        address _marketingWithdrawer,
+        address _legalAndBackupWithdrawer
+    ) public onlyMultiSign {
+        if (block.timestamp < multiSignInfo.proposalCreationTime + 1 days) {
+            revert RequiredTimeNotElapsed();
+        }
+        multiSignInfo.callerToBeSet = _caller;
+        multiSignInfo.developmentWithdrawerToBeSet = _developmentWithdrawer;
+        multiSignInfo.marketingWithdrawerToBeSet = _marketingWithdrawer;
+        multiSignInfo.legalAndBackupWithdrawerToBeSet = _legalAndBackupWithdrawer;
+        multiSignInfo.proposalCreationTime = block.timestamp;
+    }
+
+    /**
+     * @dev This function is used to vote on the current proposal to change 4 authorities addresses in case of compromisation of any of the 4 addresses. only voters in the multiSignInfo variable can call this function. if input to the function is 1 then the vote counts in favour and if its 0 it count as against.
+     */
+    function voteOnCurrentProposalByMultiSign(uint256 _vote) public onlyMultiSign {
+        if (_vote > 1 || _vote < 0) {
+            revert InvalidData();
+        }
+        if (multiSignInfo.isVoted[msg.sender]) {
+            revert AlreadyVoted();
+        }
+
+        multiSignInfo.isVoted[msg.sender] = true;
+        multiSignInfo.voteCount += 1;
+
+        if (_vote == 1) {
+            multiSignInfo.voteFavour += 1;
+        } else {
+            multiSignInfo.voteAgainst += 1;
+        }
+    }
+
+    /**
+     * @dev This function is used to execute the current proposal if it has been successful to change 4 authorities addresses in case of compromisation of any of the 4 addresses. only voters in the multiSignInfo variable can call this function.
+     */
+    function executeCurrentProposalByMultiSign() public onlyMultiSign {
+        if (multiSignInfo.voteFavour < multiSignInfo.voteNeeded) {
+            revert ProposalNotSucceeded();
+        }
+
+        caller = multiSignInfo.callerToBeSet;
+        developmentWithdrawInfo.WithdrawerAddress = multiSignInfo.developmentWithdrawerToBeSet;
+        marketingWithdrawInfo.WithdrawerAddress = multiSignInfo.marketingWithdrawerToBeSet;
+        legalAndBackupWithdrawInfo.WithdrawerAddress = multiSignInfo
+            .legalAndBackupWithdrawerToBeSet;
+
+        delete multiSignInfo;
     }
 }
