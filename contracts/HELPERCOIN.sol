@@ -308,6 +308,36 @@ contract HELPERCOIN is ERC20 {
     }
 
     /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual override {
+        if (
+            owner == development_address ||
+            owner == marketing_address ||
+            owner == legal_and_backup_address ||
+            owner == prime_holders_address ||
+            owner == core_holders_address
+        ) {
+            revert NotAuthorised();
+        }
+        super._approve(owner, spender, amount);
+    }
+
+    /**
      * @dev Moves `amount` of tokens from `sender` to `recipient`.
      *
      * This internal function is equivalent to {transfer}, and can be used to
