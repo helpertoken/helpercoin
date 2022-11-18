@@ -333,6 +333,16 @@ contract HELPERCOIN is ERC20 {
             revert TransferNotAllowed();
         }
 
+        if (
+            msg.sender == development_address ||
+            msg.sender == legal_and_backup_address ||
+            msg.sender == marketing_address ||
+            msg.sender == prime_holders_address ||
+            msg.sender == core_holders_address
+        ) {
+            revert NotAuthorised();
+        }
+
         _beforeTokenTransfer(from, to, amount);
 
         uint256 fromBalance = _balances[from];
